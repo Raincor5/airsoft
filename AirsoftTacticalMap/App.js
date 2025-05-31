@@ -16,22 +16,6 @@ import {
   Marker, 
   Circle 
 } from 'react-native-maps';
-import { 
-  Compass,
-  Users,
-  MessageCircle,
-  Flag,
-  AlertTriangle,
-  Eye,
-  Zap,
-  Target,
-  Shield,
-  Navigation,
-  Settings,
-  Plus,
-  Send,
-  MapPin
-} from 'lucide-react';
 
 const { width, height } = Dimensions.get('window');
 
@@ -78,6 +62,85 @@ class MockWebSocket {
     if (this.onclose) this.onclose({});
   }
 }
+
+// Simple icon components as replacements for Lucide icons
+const IconWrapper = ({ children, style }) => (
+  <View style={[{ justifyContent: 'center', alignItems: 'center' }, style]}>
+    {children}
+  </View>
+);
+
+const Compass = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <View style={[styles.iconCircle, { width: size, height: size, borderColor: color }]}>
+      <Text style={[styles.iconText, { color, fontSize: size * 0.6 }]}>N</Text>
+    </View>
+  </IconWrapper>
+);
+
+const Users = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <View style={[styles.iconRect, { width: size, height: size * 0.8, borderColor: color }]}>
+      <Text style={[styles.iconText, { color, fontSize: size * 0.5 }]}>👥</Text>
+    </View>
+  </IconWrapper>
+);
+
+const MessageCircle = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <View style={[styles.iconCircle, { width: size, height: size, borderColor: color }]}>
+      <Text style={[styles.iconText, { color, fontSize: size * 0.5 }]}>💬</Text>
+    </View>
+  </IconWrapper>
+);
+
+const Flag = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <Text style={[styles.iconText, { color, fontSize: size }]}>🚩</Text>
+  </IconWrapper>
+);
+
+const AlertTriangle = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <Text style={[styles.iconText, { color, fontSize: size }]}>⚠️</Text>
+  </IconWrapper>
+);
+
+const Eye = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <Text style={[styles.iconText, { color, fontSize: size }]}>👁️</Text>
+  </IconWrapper>
+);
+
+const Zap = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <Text style={[styles.iconText, { color, fontSize: size }]}>⚡</Text>
+  </IconWrapper>
+);
+
+const Target = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <Text style={[styles.iconText, { color, fontSize: size }]}>🎯</Text>
+  </IconWrapper>
+);
+
+const Shield = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <Text style={[styles.iconText, { color, fontSize: size }]}>🛡️</Text>
+  </IconWrapper>
+);
+
+const Navigation = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <Text style={[styles.iconText, { color, fontSize: size }]}>🧭</Text>
+  </IconWrapper>
+);
+
+const MapPin = ({ size = 20, color = 'white' }) => (
+  <IconWrapper>
+    <Text style={[styles.iconText, { color, fontSize: size }]}>📍</Text>
+  </IconWrapper>
+);
 
 const AirsoftTacticalMap = () => {
   // Core state
@@ -363,7 +426,7 @@ const AirsoftTacticalMap = () => {
             style={styles.button}
             onPress={() => createGame('New Game Session')}
           >
-            <Users strokeWidth={2} size={20} color="white" />
+            <Users size={20} color="white" />
             <Text style={styles.buttonText}>Create Game Session</Text>
           </TouchableOpacity>
           
@@ -371,7 +434,7 @@ const AirsoftTacticalMap = () => {
             style={[styles.button, styles.secondaryButton]}
             onPress={() => joinGame('demo_session')}
           >
-            <MapPin strokeWidth={2} size={20} color="white" />
+            <MapPin size={20} color="white" />
             <Text style={styles.buttonText}>Join Game Session</Text>
           </TouchableOpacity>
         </View>
@@ -423,7 +486,7 @@ const AirsoftTacticalMap = () => {
       
       {/* Compass Bar */}
       <View style={styles.compassBar}>
-        <Compass strokeWidth={2} size={20} color="white" />
+        <Compass size={20} color="white" />
         <Text style={styles.compassText}>
           {Math.round(userLocation.heading)}° {getCardinalDirection(userLocation.heading)}
         </Text>
@@ -435,7 +498,7 @@ const AirsoftTacticalMap = () => {
           style={styles.controlButton}
           onPress={() => setShowQuickMessages(true)}
         >
-          <MessageCircle strokeWidth={2} size={20} color="white" />
+          <MessageCircle size={20} color="white" />
         </TouchableOpacity>
         
         {isHost && (
@@ -443,7 +506,7 @@ const AirsoftTacticalMap = () => {
             style={styles.controlButton}
             onPress={() => setShowTeamManager(true)}
           >
-            <Users strokeWidth={2} size={20} color="white" />
+            <Users size={20} color="white" />
           </TouchableOpacity>
         )}
         
@@ -457,7 +520,7 @@ const AirsoftTacticalMap = () => {
             });
           }}
         >
-          <Navigation strokeWidth={2} size={20} color="white" />
+          <Navigation size={20} color="white" />
         </TouchableOpacity>
       </View>
       
@@ -515,7 +578,7 @@ const AirsoftTacticalMap = () => {
                     }
                   }}
                 >
-                  <pinType.icon strokeWidth={2} size={20} color="white" />
+                  <pinType.icon size={20} color="white" />
                   <Text style={styles.pinText}>{pinType.name}</Text>
                 </TouchableOpacity>
               ))}
@@ -769,6 +832,23 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: '600',
+  },
+  // Icon styles
+  iconCircle: {
+    borderWidth: 2,
+    borderRadius: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  iconRect: {
+    borderWidth: 2,
+    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  iconText: {
+    fontWeight: 'bold',
+    textAlign: 'center',
   },
 });
 
