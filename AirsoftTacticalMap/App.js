@@ -11,11 +11,7 @@ import {
   Dimensions,
   Platform
 } from 'react-native';
-import { 
-  MapView, 
-  Marker, 
-  Circle 
-} from 'react-native-maps';
+import MapView, { Marker, Circle } from 'react-native-maps';
 
 const { width, height } = Dimensions.get('window');
 
@@ -402,6 +398,8 @@ const AirsoftTacticalMap = () => {
     const pinType = pinTypes.find(p => p.id === pin.type);
     if (!pinType) return null;
     
+    const IconComponent = pinType.icon;
+    
     return (
       <Marker
         key={pin.id}
@@ -410,7 +408,7 @@ const AirsoftTacticalMap = () => {
         description={`Added by ${pin.playerId}`}
       >
         <View style={[styles.pinMarker, { backgroundColor: pinType.color }]}>
-          <pinType.icon size={16} color="white" />
+          <IconComponent size={16} color="white" />
         </View>
       </Marker>
     );
@@ -568,20 +566,23 @@ const AirsoftTacticalMap = () => {
           <View style={styles.modalContainer}>
             <Text style={styles.modalTitle}>Add Pin</Text>
             <ScrollView style={styles.pinsList}>
-              {pinTypes.map(pinType => (
-                <TouchableOpacity
-                  key={pinType.id}
-                  style={[styles.pinButton, { backgroundColor: pinType.color }]}
-                  onPress={() => {
-                    if (pendingPinLocation) {
-                      addPin(pinType, pendingPinLocation);
-                    }
-                  }}
-                >
-                  <pinType.icon size={20} color="white" />
-                  <Text style={styles.pinText}>{pinType.name}</Text>
-                </TouchableOpacity>
-              ))}
+              {pinTypes.map(pinType => {
+                const IconComponent = pinType.icon;
+                return (
+                  <TouchableOpacity
+                    key={pinType.id}
+                    style={[styles.pinButton, { backgroundColor: pinType.color }]}
+                    onPress={() => {
+                      if (pendingPinLocation) {
+                        addPin(pinType, pendingPinLocation);
+                      }
+                    }}
+                  >
+                    <IconComponent size={20} color="white" />
+                    <Text style={styles.pinText}>{pinType.name}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
             <TouchableOpacity
               style={styles.closeButton}
