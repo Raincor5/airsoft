@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "Airsoft Tactical Map",
+    "slug": "airsoft-tactical-map",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourcompany.airsofttacticalmap",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "This app needs location access to show your position on the tactical map and share it with your team.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs location access to show your position on the tactical map and share it with your team.",
+        "NSMotionUsageDescription": "This app uses motion sensors to determine your facing direction on the tactical map."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
+      "package": "com.yourcompany.airsofttacticalmap",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Airsoft Tactical Map to use your location to show your position on the map and share it with your team."
+        }
+      ]
+    ]
+  }
+}
