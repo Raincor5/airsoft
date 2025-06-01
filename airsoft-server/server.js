@@ -14,6 +14,7 @@ app.use(express.json());
 
 // Store active game sessions
 const gameSessions = new Map();
+const sessionCodes = new Map(); // Map session codes to session IDs
 const playerConnections = new Map(); // Map WebSocket connections to player IDs
 
 // WebSocket Server
@@ -24,10 +25,11 @@ const wss = new WebSocket.Server({
 
 // Game Session Class
 class GameSession {
-  constructor(id, name, hostId) {
+  constructor(id, name, hostId, code) {
     this.id = id;
     this.name = name;
     this.hostId = hostId;
+    this.code = code;
     this.players = new Map();
     this.teams = new Map();
     this.pins = [];
@@ -50,10 +52,29 @@ class GameSession {
   }
 
   addPlayer(player) {
-    this.players.set(player.id, player);
+    // Include player color and name
+    const playerData = {
+      id: player.id,
+      name: player.name,
+      color: player.color || '#007AFF',
+      teamId: player.teamId || null,
+      location: player.location || null,
+      isOnline: true,
+      lastSeen: Date.now()
+    };
+    this.players.set(player.id, playerData);
+    
+    // If player has a team, add to team's player list
+    if (playerData.teamId && this.teams.get(playerData.teamId)) {
+      const team = this.teams.get(playerData.teamId);
+      if (!team.players.includes(player.id)) {
+        team.players.push(player.id);
+      }
+    }
+    
     this.broadcastToSession({
       type: 'player_joined',
-      player: this.sanitizePlayer(player),
+      player: this.sanitizePlayer(playerData),
       totalPlayers: this.players.size
     });
   }
@@ -78,17 +99,28 @@ class GameSession {
   updatePlayerLocation(playerId, location) {
     const player = this.players.get(playerId);
     if (player) {
-      player.location = {
-        ...location,
-        timestamp: Date.now()
-      };
-      
-      this.broadcastToSession({
-        type: 'location_update',
-        playerId,
-        location: player.location,
-        teamId: player.teamId
-      });
+      // Validate location data
+      if (location && 
+          location.latitude && 
+          location.longitude &&
+          Math.abs(location.latitude) <= 90 &&
+          Math.abs(location.longitude) <= 180 &&
+          location.latitude !== 0 &&
+          location.longitude !== 0) {
+        player.location = {
+          ...location,
+          timestamp: Date.now()
+        };
+        
+        this.broadcastToSession({
+          type: 'location_update',
+          playerId,
+          location: player.location,
+          teamId: player.teamId
+        }, playerId); // Exclude the sender
+      } else {
+        console.log(`Invalid location data for player ${playerId}:`, location);
+      }
     }
   }
 
@@ -126,14 +158,30 @@ class GameSession {
       
       // Add to new team
       player.teamId = teamId;
-      team.players.push(playerId);
+      if (!team.players.includes(playerId)) {
+        team.players.push(playerId);
+      }
+      
+      // Update the player in the map
+      this.players.set(playerId, player);
       
       this.broadcastToSession({
         type: 'team_assignment',
         playerId,
         teamId,
         teams: this.getTeamsData(),
-        players: this.getPlayersData()
+        players: this.getPlayersData() // This should include ALL players
+      });
+    }
+  }
+  
+  updatePlayer(playerId, updates) {
+    const player = this.players.get(playerId);
+    if (player) {
+      Object.assign(player, updates);
+      this.broadcastToSession({
+        type: 'player_updated',
+        player: this.sanitizePlayer(player)
       });
     }
   }
@@ -161,8 +209,10 @@ class GameSession {
     }
   }
 
-  broadcastToSession(data) {
+  broadcastToSession(data, excludePlayerId = null) {
     for (const [playerId, player] of this.players) {
+      if (playerId === excludePlayerId) continue;
+      
       const ws = playerConnections.get(playerId);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(data));
@@ -186,6 +236,7 @@ class GameSession {
     return {
       id: this.id,
       name: this.name,
+      code: this.code,
       hostId: this.hostId,
       players: this.getPlayersData(),
       teams: this.getTeamsData(),
@@ -216,12 +267,22 @@ class GameSession {
     return {
       id: player.id,
       name: player.name,
+      color: player.color || '#007AFF',
       teamId: player.teamId,
-      location: player.location,
+      location: player.location || null, // Include location even if null
       isOnline: true,
       lastSeen: Date.now()
     };
   }
+}
+
+// Helper function to find session by code
+function findSessionByCode(code) {
+  const sessionId = sessionCodes.get(code);
+  if (sessionId) {
+    return gameSessions.get(sessionId);
+  }
+  return null;
 }
 
 // WebSocket connection handler
@@ -229,11 +290,27 @@ wss.on('connection', (ws, req) => {
   console.log('New WebSocket connection');
   let playerId = null;
   let sessionId = null;
+  let heartbeatInterval = null;
+
+  // Setup heartbeat
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  heartbeatInterval = setInterval(() => {
+    if (ws.isAlive === false) {
+      clearInterval(heartbeatInterval);
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }, 30000);
 
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      console.log('Received:', data.type, data);
+      console.log('Received:', data.type);
 
       switch (data.type) {
         case 'join_session':
@@ -264,6 +341,10 @@ wss.on('connection', (ws, req) => {
           handleAssignTeam(data);
           break;
         
+        case 'update_player':
+          handleUpdatePlayer(data);
+          break;
+        
         case 'ping':
           ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
           break;
@@ -282,6 +363,8 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     console.log('WebSocket connection closed');
+    clearInterval(heartbeatInterval);
+    
     if (playerId && sessionId) {
       const session = gameSessions.get(sessionId);
       if (session) {
@@ -290,6 +373,7 @@ wss.on('connection', (ws, req) => {
         // Clean up empty sessions
         if (session.players.size === 0) {
           gameSessions.delete(sessionId);
+          sessionCodes.delete(session.code);
           console.log(`Session ${sessionId} removed (empty)`);
         }
       }
@@ -297,10 +381,22 @@ wss.on('connection', (ws, req) => {
     }
   });
 
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+  });
+
   // Message handlers
   function handleJoinSession(ws, data) {
     const { sessionId: sid, player } = data;
-    const session = gameSessions.get(sid);
+    let session = null;
+    
+    // Check if sessionId contains a wildcard pattern (for joining by code)
+    if (sid && sid.includes('*')) {
+      const code = sid.split('_')[1].toUpperCase();
+      session = findSessionByCode(code);
+    } else {
+      session = gameSessions.get(sid);
+    }
     
     if (!session) {
       ws.send(JSON.stringify({ 
@@ -311,7 +407,7 @@ wss.on('connection', (ws, req) => {
     }
 
     playerId = player.id;
-    sessionId = sid;
+    sessionId = session.id;
     playerConnections.set(playerId, ws);
     session.addPlayer(player);
 
@@ -319,14 +415,46 @@ wss.on('connection', (ws, req) => {
       type: 'session_joined',
       session: session.getSessionData()
     }));
+    
+    console.log(`Player ${player.name} joined session ${session.code}`);
   }
 
   function handleCreateSession(ws, data) {
     const { sessionName, player } = data;
+    
+    // Extract code from session ID if provided
+    let code = null;
+    if (data.sessionId) {
+      const parts = data.sessionId.split('_');
+      if (parts.length >= 2) {
+        code = parts[1].toUpperCase();
+      }
+    }
+    
+    // Generate new code if not provided
+    if (!code) {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      code = '';
+      for (let i = 0; i < 6; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+    }
+    
+    // Make sure code is unique
+    while (sessionCodes.has(code)) {
+      code = '';
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      for (let i = 0; i < 6; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+    }
+    
     const newSessionId = uuidv4();
-    const session = new GameSession(newSessionId, sessionName, player.id);
+    const session = new GameSession(newSessionId, sessionName, player.id, code);
     
     gameSessions.set(newSessionId, session);
+    sessionCodes.set(code, newSessionId);
+    
     playerId = player.id;
     sessionId = newSessionId;
     playerConnections.set(playerId, ws);
@@ -336,6 +464,8 @@ wss.on('connection', (ws, req) => {
       type: 'session_created',
       session: session.getSessionData()
     }));
+    
+    console.log(`Session created with code: ${code}`);
   }
 
   function handleLocationUpdate(data) {
@@ -377,6 +507,14 @@ wss.on('connection', (ws, req) => {
       session.assignPlayerToTeam(data.playerId, data.teamId);
     }
   }
+  
+  function handleUpdatePlayer(data) {
+    if (!sessionId) return;
+    const session = gameSessions.get(sessionId);
+    if (session) {
+      session.updatePlayer(data.playerId, data.updates);
+    }
+  }
 });
 
 // REST API Endpoints
@@ -384,6 +522,7 @@ app.get('/api/sessions', (req, res) => {
   const sessions = Array.from(gameSessions.values()).map(session => ({
     id: session.id,
     name: session.name,
+    code: session.code,
     totalPlayers: session.players.size,
     isActive: session.isActive,
     createdAt: session.createdAt
@@ -399,19 +538,45 @@ app.get('/api/sessions/:id', (req, res) => {
   res.json(session.getSessionData());
 });
 
+app.get('/api/sessions/code/:code', (req, res) => {
+  const session = findSessionByCode(req.params.code.toUpperCase());
+  if (!session) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+  res.json(session.getSessionData());
+});
+
 app.post('/api/sessions', (req, res) => {
-  const { name, hostId } = req.body;
+  const { name, hostId, code } = req.body;
   if (!name || !hostId) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
   
+  let sessionCode = code?.toUpperCase();
+  
+  // Generate code if not provided
+  if (!sessionCode) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    sessionCode = '';
+    for (let i = 0; i < 6; i++) {
+      sessionCode += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+  }
+  
+  // Check if code already exists
+  if (sessionCodes.has(sessionCode)) {
+    return res.status(400).json({ error: 'Session code already exists' });
+  }
+  
   const sessionId = uuidv4();
-  const session = new GameSession(sessionId, name, hostId);
+  const session = new GameSession(sessionId, name, hostId, sessionCode);
   gameSessions.set(sessionId, session);
+  sessionCodes.set(sessionCode, sessionId);
   
   res.status(201).json({
     id: sessionId,
     name,
+    code: sessionCode,
     hostId,
     totalPlayers: 0
   });
@@ -441,6 +606,7 @@ app.delete('/api/sessions/:id', (req, res) => {
   }
   
   gameSessions.delete(sessionId);
+  sessionCodes.delete(session.code);
   res.json({ message: 'Session deleted successfully' });
 });
 
@@ -450,6 +616,7 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     activeSessions: gameSessions.size,
     activeConnections: playerConnections.size,
+    sessionCodes: sessionCodes.size,
     timestamp: new Date().toISOString()
   });
 });
@@ -482,5 +649,19 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 });
+
+// Periodic cleanup of stale sessions
+setInterval(() => {
+  const now = Date.now();
+  const staleTimeout = 3600000; // 1 hour
+  
+  for (const [sessionId, session] of gameSessions) {
+    if (session.players.size === 0 && (now - session.createdAt.getTime()) > staleTimeout) {
+      gameSessions.delete(sessionId);
+      sessionCodes.delete(session.code);
+      console.log(`Cleaned up stale session: ${session.code}`);
+    }
+  }
+}, 300000); // Run every 5 minutes
 
 module.exports = { app, server, wss };
