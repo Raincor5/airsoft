@@ -20,7 +20,7 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "This app needs location access to show your position on the tactical map and share it with your team.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs location access to show your position on the tactical map and share it with your team.",
-        "NSMotionUsageDescription": "This app uses motion sensors to determine your facing direction on the tactical map."
+        "NSMotionUsageDescription": "This app uses motion sensors to determine your facing direction on the tactical map for better team coordination."
       }
     },
     "android": {
@@ -43,7 +43,15 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Airsoft Tactical Map to use your location to show your position on the map and share it with your team."
+          "locationAlwaysAndWhenInUsePermission": "Allow Airsoft Tactical Map to use your location to show your position on the map and share it with your team.",
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false
+        }
+      ],
+      [
+        "expo-sensors",
+        {
+          "motionPermission": "Allow Airsoft Tactical Map to access motion sensors to display your facing direction on the map."
         }
       ]
     ]
