@@ -1,15 +1,6 @@
-import React from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import React, { useMemo } from 'react';
+import { View, Text, StyleSheet } from 'react-native';
 import { Marker } from 'react-native-maps';
-import { Ionicons } from '@expo/vector-icons';
-import { 
-  colors, 
-  components, 
-  normalize, 
-  spacing, 
-  isSmallScreen,
-  getResponsiveSize 
-} from '../../utils/styles';
 
 const PlayerMarker = ({ 
   player, 
@@ -17,117 +8,150 @@ const PlayerMarker = ({
   coordinate, 
   heading, 
   message = null,
-  tracksViewChanges = true,
   onPress
 }) => {
   // Safeguard: Do not render if required data is missing
   if (!coordinate || !coordinate.latitude || !coordinate.longitude) {
-    console.log('Skipping marker render due to missing coordinates');
     return null;
   }
   
-  // Safeguard: Check for valid player data
   if (!player || typeof player !== 'object') {
-    console.log('Skipping marker render due to invalid player data');
-    return null;
-  }
-  
-  // Safeguard: Never render a server copy of the current user
-  // This should never happen with our new state management, but just in case
-  if (player && player.id && player.id.includes('player_') && !isCurrentUser) {
-    console.log('Prevented rendering of duplicate current user:', player.id);
     return null;
   }
 
-  const markerSize = isCurrentUser 
-    ? getResponsiveSize(normalize(30), normalize(36), normalize(40), normalize(44))
-    : getResponsiveSize(normalize(24), normalize(30), normalize(34), normalize(38));
+  // CRITICAL: Memoize the entire marker content to prevent re-renders
+  const markerContent = useMemo(() => {
+    const currentHeading = heading || 0;
     
-  const iconSize = isCurrentUser
-    ? getResponsiveSize(normalize(16), normalize(20), normalize(22), normalize(24))
-    : getResponsiveSize(normalize(14), normalize(16), normalize(18), normalize(20));
-  
-  // Apply heading rotation to direction indicator
-  const directionStyle = heading !== undefined && heading !== null
-    ? { transform: [{ rotate: `${heading}deg` }] }
-    : {};
-  
-  const markerColor = player?.color || colors.primary;
-  
-  return (
-    <Marker
-      coordinate={coordinate}
-      tracksViewChanges={tracksViewChanges}
-      onPress={onPress}
-    >
-      <View style={styles.markerContainer}>
+    return (
+      <View style={styles.container}>
+        {/* Direction cone */}
+        <View 
+          style={[
+            styles.cone,
+            { transform: [{ rotate: `${currentHeading}deg` }] }
+          ]}
+        >
+          <View style={styles.coneTriangle} />
+        </View>
+        
+        {/* Main dot */}
+        <View style={isCurrentUser ? styles.currentUserDot : styles.otherPlayerDot} />
+        
+        {/* Player name */}
+        <Text style={styles.nameText}>
+          {isCurrentUser ? "You" : (player?.name || "?")}
+        </Text>
+        
         {/* Message bubble */}
         {message && (
           <View style={styles.messageBubble}>
-            <Text style={styles.messageBubbleText}>{message}</Text>
+            <Text style={styles.messageText}>{message}</Text>
           </View>
         )}
-        
-        <View 
-          style={[
-            isCurrentUser ? styles.userMarker : styles.playerMarker,
-            { backgroundColor: markerColor },
-            { width: markerSize, height: markerSize, borderRadius: markerSize / 2 }
-          ]}
-        >
-          <Ionicons 
-            name={isCurrentUser ? "person" : "person-outline"} 
-            size={iconSize} 
-            color="white" 
-            style={directionStyle}
-          />
-        </View>
-        
-        <View style={styles.nameContainer}>
-          <Text style={styles.nameText}>
-            {isCurrentUser ? "You" : (player?.name || "Unknown")}
-          </Text>
-        </View>
+      </View>
+    );
+  }, [heading, isCurrentUser, player?.name, message]);
+
+  return (
+    <Marker
+      coordinate={coordinate}
+      tracksViewChanges={false}
+      onPress={onPress}
+    >
+      <View style={styles.markerWrapper}>
+        {markerContent}
       </View>
     </Marker>
   );
 };
 
+// COMPLETELY STATIC STYLES - NO VARIABLES OR CALCULATIONS
 const styles = StyleSheet.create({
-  markerContainer: {
-    ...components.markerContainer,
+  markerWrapper: {
+    // Wrapper to isolate marker content - fixes teleporting bug
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  userMarker: {
-    ...components.userMarker,
+  container: {
+    width: 80,
+    height: 80,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  playerMarker: {
-    ...components.playerMarker,
+  cone: {
+    position: 'absolute',
+    width: 60,
+    height: 60,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
   },
-  nameContainer: {
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    paddingHorizontal: isSmallScreen ? normalize(6) : normalize(8),
-    paddingVertical: isSmallScreen ? normalize(2) : normalize(4),
-    borderRadius: normalize(10),
-    marginTop: isSmallScreen ? normalize(2) : normalize(4),
+  coneTriangle: {
+    width: 0,
+    height: 0,
+    backgroundColor: 'transparent',
+    borderStyle: 'solid',
+    borderLeftWidth: 15,
+    borderRightWidth: 15,
+    borderBottomWidth: 30,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'rgba(0, 122, 255, 0.4)',
+  },
+  currentUserDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#007AFF',
+    borderWidth: 2,
+    borderColor: 'white',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    elevation: 3,
+    zIndex: 10,
+  },
+  otherPlayerDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#FF4444', // Default red color
+    borderWidth: 2,
+    borderColor: 'white',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    elevation: 3,
+    zIndex: 10,
   },
   nameText: {
-    color: colors.text.primary,
-    fontSize: getResponsiveSize(normalize(10), normalize(12), normalize(13), normalize(14)),
+    position: 'absolute',
+    top: 45,
+    color: 'white',
+    fontSize: 10,
     fontWeight: '600',
-    textAlign: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: 'hidden',
   },
   messageBubble: {
+    position: 'absolute',
+    bottom: 45,
     backgroundColor: 'rgba(0, 122, 255, 0.9)',
-    paddingHorizontal: normalize(10),
-    paddingVertical: normalize(5),
-    borderRadius: normalize(15),
-    marginBottom: normalize(5),
-    maxWidth: normalize(150),
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    maxWidth: 100,
   },
-  messageBubbleText: {
+  messageText: {
     color: 'white',
-    fontSize: getResponsiveSize(normalize(12), normalize(14), normalize(14), normalize(16)),
-  }
+    fontSize: 11,
+    textAlign: 'center',
+  },
 });
 
 export default PlayerMarker;

@@ -128,13 +128,27 @@ const AirsoftTacticalMap = () => {
   }, [location, heading, gameSession, currentUser.id]);
 
   const handleCreateSession = (playerData) => {
+    console.log('Creating session with player data:', playerData);
+    console.log('Current user before create:', currentUser);
+    
+    // Create session locally first
     const { sessionId, code } = createSession(playerData);
     loading.current = true;
     
-    gameService.connect(sessionId, `Game ${code}`, playerData)
+    // Prepare complete player data with ID for server
+    const completePlayerData = {
+      id: currentUser.id, // Make sure ID is included
+      ...playerData
+    };
+    
+    console.log('Sending to server - sessionId:', sessionId);
+    console.log('Sending to server - playerData:', completePlayerData);
+    
+    gameService.connect(sessionId, `Game ${code}`, completePlayerData)
       .then(() => {
         isConnected.current = true;
         loading.current = false;
+        console.log('Successfully connected to server');
       })
       .catch(error => {
         console.error('Failed to create session:', error);
@@ -145,13 +159,28 @@ const AirsoftTacticalMap = () => {
   };
 
   const handleJoinSession = (code, playerData) => {
+    console.log('Joining session with code:', code);
+    console.log('Player data:', playerData);
+    console.log('Current user before join:', currentUser);
+    
+    // Join session locally first
     const { sessionId } = joinSession(code, playerData);
     loading.current = true;
     
-    gameService.connect(sessionId, null, playerData)
+    // Prepare complete player data with ID for server
+    const completePlayerData = {
+      id: currentUser.id, // Make sure ID is included
+      ...playerData
+    };
+    
+    console.log('Sending to server - sessionId:', sessionId);
+    console.log('Sending to server - playerData:', completePlayerData);
+    
+    gameService.connect(sessionId, null, completePlayerData)
       .then(() => {
         isConnected.current = true;
         loading.current = false;
+        console.log('Successfully connected to server');
       })
       .catch(error => {
         console.error('Failed to join session:', error);
@@ -192,6 +221,12 @@ const AirsoftTacticalMap = () => {
   const handleUpdatePlayer = (playerId, updates) => {
     gameService.updatePlayer(playerId, updates);
   };
+
+  // Debug logging
+  useEffect(() => {
+    console.log('App render - Current user ID:', currentUser.id);
+    console.log('App render - Current user data:', currentUser);
+  }, [currentUser]);
 
   // Loading state
   if (!location && locationStatus !== 'Location error') {

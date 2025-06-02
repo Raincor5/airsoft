@@ -10,8 +10,7 @@ import {
   Platform,
   FlatList
 } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
-import { Icons } from '../Icons/index';
+import MapView from 'react-native-maps';
 import SessionInfoModal from '../Modals/SessionInfoModal';
 import ChatModal from '../Modals/ChatModal';
 import QuickMessagesModal from '../Modals/QuickMessagesModal';
@@ -77,6 +76,9 @@ const GameMapView = ({
   // Refs
   const mapRef = useRef(null);
 
+  // Calculate player count: current user + other players
+  const totalPlayerCount = 1 + (otherPlayers ? Object.keys(otherPlayers).length : 0);
+
   // Handle map press
   const handleMapPress = (event) => {
     setPendingPinLocation(event.nativeEvent.coordinate);
@@ -118,6 +120,10 @@ const GameMapView = ({
     });
   };
 
+  console.log('MapView render - Current user:', currentUser.id);
+  console.log('MapView render - Other players:', Object.keys(otherPlayers || {}));
+  console.log('MapView render - Total players:', totalPlayerCount);
+
   return (
     <View style={styles.container}>
       <MapView
@@ -130,8 +136,8 @@ const GameMapView = ({
         showsCompass={false}
         toolbarEnabled={false}
       >
-        {/* User location with direction - Only show local marker */}
-        {safeUserLocation && (
+        {/* Current user marker - ONLY render if we have a valid location */}
+        {safeUserLocation && currentUser && (
           <PlayerMarker
             player={currentUser}
             isCurrentUser={true}
@@ -145,19 +151,32 @@ const GameMapView = ({
           />
         )}
         
-        {/* Other players - Direct from otherPlayers list */}
-        {Object.entries(otherPlayers || {}).map(([playerId, player]) => {
-          if (!player?.location) return null;
+        {/* Other players - Only render from otherPlayers list */}
+        {otherPlayers && Object.entries(otherPlayers).map(([playerId, player]) => {
+          // Skip if no location data
+          if (!player?.location) {
+            console.log('Skipping player marker for', playerId, 'no location');
+            return null;
+          }
+          
+          // Skip if this is somehow the current user (shouldn't happen)
+          if (playerId === currentUser.id) {
+            console.log('Prevented rendering current user as other player:', playerId);
+            return null;
+          }
+          
+          console.log('Rendering other player marker:', playerId, player.name);
           
           return (
             <PlayerMarker
               key={playerId}
               player={player}
+              isCurrentUser={false}
               coordinate={{
                 latitude: player.location.latitude,
                 longitude: player.location.longitude
               }}
-              heading={player.location.heading}
+              heading={player.location.heading || 0}
               message={playerMessages[playerId]}
               tracksViewChanges={false}
             />
@@ -178,7 +197,7 @@ const GameMapView = ({
       {sessionCode && (
         <SessionBar
           sessionCode={sessionCode}
-          playerCount={(otherPlayers ? Object.keys(otherPlayers).length : 0) + 1} // Count other players + current user
+          playerCount={totalPlayerCount}
           onPress={() => setShowSessionInfo(true)}
         />
       )}
@@ -205,7 +224,7 @@ const GameMapView = ({
       <SessionInfoModal
         visible={showSessionInfo}
         sessionCode={sessionCode}
-        playerCount={(otherPlayers ? Object.keys(otherPlayers).length : 0) + 1} // Count other players + current user
+        playerCount={totalPlayerCount}
         onClose={() => setShowSessionInfo(false)}
       />
       
@@ -262,4 +281,4 @@ const styles = StyleSheet.create({
   }
 });
 
-export default GameMapView; 
+export default GameMapView;

@@ -29,7 +29,7 @@ class GameSession {
     this.id = id;
     this.name = name;
     this.hostId = hostId;
-    this.code = code;
+    this.code = code.toUpperCase(); // Always store codes in uppercase
     this.players = new Map();
     this.teams = new Map();
     this.pins = [];
@@ -52,6 +52,8 @@ class GameSession {
   }
 
   addPlayer(player) {
+    console.log(`Adding player ${player.name} (${player.id}) to session ${this.code}`);
+    
     // Include player color and name
     const playerData = {
       id: player.id,
@@ -72,6 +74,8 @@ class GameSession {
       }
     }
     
+    console.log(`Session ${this.code} now has ${this.players.size} players:`, Array.from(this.players.keys()));
+    
     this.broadcastToSession({
       type: 'player_joined',
       player: this.sanitizePlayer(playerData),
@@ -82,12 +86,16 @@ class GameSession {
   removePlayer(playerId) {
     const player = this.players.get(playerId);
     if (player) {
+      console.log(`Removing player ${playerId} from session ${this.code}`);
+      
       // Remove from team
       for (const [teamId, team] of this.teams) {
         team.players = team.players.filter(id => id !== playerId);
       }
       
       this.players.delete(playerId);
+      console.log(`Session ${this.code} now has ${this.players.size} players`);
+      
       this.broadcastToSession({
         type: 'player_left',
         playerId,
@@ -170,7 +178,7 @@ class GameSession {
         playerId,
         teamId,
         teams: this.getTeamsData(),
-        players: this.getPlayersData() // This should include ALL players
+        players: this.getPlayersData()
       });
     }
   }
@@ -269,19 +277,26 @@ class GameSession {
       name: player.name,
       color: player.color || '#007AFF',
       teamId: player.teamId,
-      location: player.location || null, // Include location even if null
+      location: player.location || null,
       isOnline: true,
       lastSeen: Date.now()
     };
   }
 }
 
-// Helper function to find session by code
+// Helper function to find session by code - IMPROVED
 function findSessionByCode(code) {
-  const sessionId = sessionCodes.get(code);
+  const upperCode = code.toUpperCase();
+  console.log(`Looking for session with code: ${upperCode}`);
+  console.log(`Available session codes:`, Array.from(sessionCodes.keys()));
+  
+  const sessionId = sessionCodes.get(upperCode);
   if (sessionId) {
-    return gameSessions.get(sessionId);
+    const session = gameSessions.get(sessionId);
+    console.log(`Found session: ${session ? session.id : 'null'}`);
+    return session;
   }
+  console.log('Session not found');
   return null;
 }
 
@@ -310,7 +325,7 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      console.log('Received:', data.type);
+      console.log('Received message:', data.type, data);
 
       switch (data.type) {
         case 'join_session':
@@ -374,7 +389,7 @@ wss.on('connection', (ws, req) => {
         if (session.players.size === 0) {
           gameSessions.delete(sessionId);
           sessionCodes.delete(session.code);
-          console.log(`Session ${sessionId} removed (empty)`);
+          console.log(`Session ${sessionId} (${session.code}) removed (empty)`);
         }
       }
       playerConnections.delete(playerId);
@@ -385,23 +400,42 @@ wss.on('connection', (ws, req) => {
     console.error('WebSocket error:', error);
   });
 
-  // Message handlers
+  // IMPROVED MESSAGE HANDLERS
   function handleJoinSession(ws, data) {
+    console.log('Handling join session:', data);
     const { sessionId: sid, player } = data;
+    
+    // Validate player data
+    if (!player || !player.id) {
+      console.error('Invalid player data - missing ID:', player);
+      ws.send(JSON.stringify({ 
+        type: 'error', 
+        message: 'Invalid player data. Please restart the app.' 
+      }));
+      return;
+    }
+    
     let session = null;
     
-    // Check if sessionId contains a wildcard pattern (for joining by code)
+    // IMPROVED: Better parsing of session join requests
     if (sid && sid.includes('*')) {
-      const code = sid.split('_')[1].toUpperCase();
-      session = findSessionByCode(code);
-    } else {
+      // Extract code from patterns like "session_ABC123_*"
+      const parts = sid.split('_');
+      if (parts.length >= 2) {
+        const code = parts[1].toUpperCase();
+        console.log(`Attempting to join session with code: ${code}`);
+        session = findSessionByCode(code);
+      }
+    } else if (sid) {
+      // Direct session ID lookup
       session = gameSessions.get(sid);
     }
     
     if (!session) {
+      console.log('Session not found for:', sid);
       ws.send(JSON.stringify({ 
         type: 'error', 
-        message: 'Session not found' 
+        message: 'Session not found. Please check the session code.' 
       }));
       return;
     }
@@ -411,47 +445,45 @@ wss.on('connection', (ws, req) => {
     playerConnections.set(playerId, ws);
     session.addPlayer(player);
 
+    const sessionData = session.getSessionData();
+    console.log('Sending session data to player:', sessionData);
+
     ws.send(JSON.stringify({
       type: 'session_joined',
-      session: session.getSessionData()
+      session: sessionData
     }));
     
-    console.log(`Player ${player.name} joined session ${session.code}`);
+    console.log(`Player ${player.name} (${player.id}) joined session ${session.code}`);
   }
 
   function handleCreateSession(ws, data) {
+    console.log('Handling create session:', data);
     const { sessionName, player } = data;
     
-    // Extract code from session ID if provided
-    let code = null;
-    if (data.sessionId) {
-      const parts = data.sessionId.split('_');
-      if (parts.length >= 2) {
-        code = parts[1].toUpperCase();
-      }
+    // Validate player data
+    if (!player || !player.id) {
+      console.error('Invalid player data - missing ID:', player);
+      ws.send(JSON.stringify({ 
+        type: 'error', 
+        message: 'Invalid player data. Please restart the app.' 
+      }));
+      return;
     }
     
-    // Generate new code if not provided
-    if (!code) {
+    // Generate unique session code
+    let code;
+    do {
       const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
       code = '';
       for (let i = 0; i < 6; i++) {
         code += chars.charAt(Math.floor(Math.random() * chars.length));
       }
-    }
-    
-    // Make sure code is unique
-    while (sessionCodes.has(code)) {
-      code = '';
-      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-      for (let i = 0; i < 6; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length));
-      }
-    }
+    } while (sessionCodes.has(code));
     
     const newSessionId = uuidv4();
     const session = new GameSession(newSessionId, sessionName, player.id, code);
     
+    // Store session
     gameSessions.set(newSessionId, session);
     sessionCodes.set(code, newSessionId);
     
@@ -460,12 +492,15 @@ wss.on('connection', (ws, req) => {
     playerConnections.set(playerId, ws);
     session.addPlayer(player);
 
+    const sessionData = session.getSessionData();
+    console.log('Sending created session data:', sessionData);
+
     ws.send(JSON.stringify({
       type: 'session_created',
-      session: session.getSessionData()
+      session: sessionData
     }));
     
-    console.log(`Session created with code: ${code}`);
+    console.log(`Session created with code: ${code} by ${player.name} (${player.id})`);
   }
 
   function handleLocationUpdate(data) {
@@ -610,13 +645,13 @@ app.delete('/api/sessions/:id', (req, res) => {
   res.json({ message: 'Session deleted successfully' });
 });
 
-// Health check endpoint
+// Health check endpoint - IMPROVED
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     activeSessions: gameSessions.size,
     activeConnections: playerConnections.size,
-    sessionCodes: sessionCodes.size,
+    sessionCodes: Array.from(sessionCodes.keys()),
     timestamp: new Date().toISOString()
   });
 });
@@ -650,7 +685,7 @@ process.on('SIGTERM', () => {
   });
 });
 
-// Periodic cleanup of stale sessions
+// Periodic cleanup of stale sessions - IMPROVED
 setInterval(() => {
   const now = Date.now();
   const staleTimeout = 3600000; // 1 hour

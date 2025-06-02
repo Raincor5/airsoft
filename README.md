@@ -1,88 +1,164 @@
 # Airsoft Tactical Map
 
-A real-time tactical mapping application for airsoft games, built with React Native.
+A real-time tactical map application for airsoft teams with location sharing, team management, and tactical markers.
 
 ## Features
 
-- Real-time player position tracking
-- Team management system
-- Tactical pin placement (enemies, objectives, hazards)
-- Quick messaging system
-- Compass and heading indicators
-- Interactive map interface
+- **Real-time Location Sharing**: See your teammates' positions and directions on the map
+- **Session Management**: Create/join games using 6-character session codes
+- **Team Organization**: Assign players to teams (Red/Blue by default)
+- **Tactical Markers**: Place various pins on the map (enemy positions, objectives, hazards, etc.)
+- **Quick Messages**: Send predefined tactical messages to your team
+- **Compass Navigation**: See your heading direction with the built-in compass
 
-## Prerequisites
+## Setup Instructions
 
-- Node.js (v14 or later)
-- npm or yarn
-- React Native development environment setup
-  - For iOS: XCode (Mac only)
-  - For Android: Android Studio
+### Prerequisites
 
-## Installation
+- Node.js (v18 or higher)
+- Expo CLI (`npm install -g expo-cli`)
+- iOS/Android device or emulator
+- Expo Go app on your mobile device
 
-1. Clone the repository:
+### Server Setup
+
+1. Navigate to the server directory:
 ```bash
-git clone https://github.com/yourusername/airsoft-tactical-map.git
-cd airsoft-tactical-map
+cd airsoft-server
 ```
 
 2. Install dependencies:
 ```bash
 npm install
-# or
-yarn install
 ```
 
-3. Install iOS dependencies (Mac only):
+3. Start the server:
 ```bash
-cd ios
-pod install
-cd ..
+npm start
+# or for development with auto-reload:
+npm run dev
 ```
 
-## Running the App
+The server will run on `http://localhost:8080`
 
-### iOS
+### Mobile App Setup
+
+1. Navigate to the app directory:
 ```bash
-npm run ios
-# or
-yarn ios
+cd AirsoftTacticalMap
 ```
 
-### Android
+2. Install dependencies:
 ```bash
-npm run android
-# or
-yarn android
+npm install
 ```
 
-## Project Structure
+3. Start the Expo development server:
+```bash
+npx expo start
+```
 
-- `/AirsoftTacticalMap` - Main application code
-  - `App.js` - Main application component
-  - Other components and utilities (to be added)
+4. Scan the QR code with Expo Go app on your phone
 
-## Dependencies
+### Configuration
 
-- react-native
-- react-native-maps
-- lucide-react-native
-- react-native-svg
+#### For Local Development
 
-## Contributing
+If running on a physical device, you'll need to update the WebSocket URL in `App.js`:
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+```javascript
+// Replace localhost with your computer's IP address
+const WS_URL = 'ws://YOUR_COMPUTER_IP:8080/ws';
+```
 
-## License
+To find your computer's IP:
+- Mac: `ifconfig | grep inet`
+- Windows: `ipconfig`
+- Linux: `ip addr show`
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+#### For Production
 
-## Acknowledgments
+Update the WebSocket URL to point to your production server:
 
-- Lucide Icons for the icon set
-- React Native Maps for the mapping functionality 
+```javascript
+const WS_URL = 'wss://your-server-domain.com/ws';
+```
+
+## Usage
+
+### Creating a Game Session
+
+1. Launch the app
+2. Wait for location permissions
+3. Tap "Create Game Session"
+4. Share the 6-character code with other players
+
+### Joining a Game Session
+
+1. Launch the app
+2. Wait for location permissions
+3. Tap "Join Game Session"
+4. Enter the 6-character code
+5. Tap "Join"
+
+### Using the Map
+
+- **Your position**: Blue dot with direction cone
+- **Team members**: Colored dots based on team assignment
+- **Add markers**: Tap anywhere on the map
+- **Quick messages**: Use the message button in the control panel
+- **Center on location**: Use the navigation button
+
+### Team Management (Host Only)
+
+1. Tap the team management button
+2. Tap on players to assign them to teams
+3. Players already in a team will be highlighted
+
+## Troubleshooting
+
+### Location Issues
+
+- **iOS**: Make sure to allow location "While Using App"
+- **Android**: Grant precise location permission
+- Check that location services are enabled on your device
+
+### Compass Not Working
+
+- **iOS**: The app needs motion permissions. Go to Settings > Privacy > Motion & Fitness
+- **Android**: Should work automatically with location permissions
+
+### Connection Issues
+
+- Verify the server is running
+- Check that your device can reach the server (same network or proper port forwarding)
+- Ensure the WebSocket URL is correct
+
+### Ghost Players
+
+This was a bug from the MockWebSocket - now fixed. If you see ghost players, restart the session.
+
+## Known Limitations
+
+- Session codes are case-insensitive 6-character codes
+- Maximum recommended players per session: ~20-30 for optimal performance
+- Location updates are sent every second
+- Compass heading updates every 100ms
+
+## Security Considerations
+
+For production use:
+- Use WSS (WebSocket Secure) instead of WS
+- Implement authentication
+- Add rate limiting
+- Validate all inputs
+- Consider using a proper database for session persistence
+
+## Future Enhancements
+
+- Voice chat integration
+- Custom team colors
+- Persistent sessions
+- Game replay functionality
+- Heat maps of player movement
+- Integration with game scoring systems

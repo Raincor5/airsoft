@@ -71,6 +71,9 @@ export const useGameSession = () => {
 
   // Update session data from server
   const updateFromServer = (sessionData) => {
+    console.log('Updating from server, current user ID:', currentUser.id);
+    console.log('Server players before filtering:', Object.keys(sessionData.players || {}));
+    
     setGameSession(prev => ({ 
       ...prev, 
       ...sessionData 
@@ -85,25 +88,44 @@ export const useGameSession = () => {
     }
     
     if (sessionData.players) {
-      // Extract and remove current user from server data
-      const serverPlayers = { ...sessionData.players };
-      const serverCurrentUserData = serverPlayers[currentUser.id];
+      // Create a clean copy and filter out only the current user
+      const serverPlayers = {};
       
-      // Always remove current user from the server players list
-      if (serverCurrentUserData) {
-        delete serverPlayers[currentUser.id];
-      }
+      Object.entries(sessionData.players).forEach(([playerId, playerData]) => {
+        // Skip ONLY if this is exactly the current user
+        if (playerId === currentUser.id) {
+          console.log('Skipping current user from server data:', playerId);
+          return;
+        }
+        
+        // Skip if player ID is undefined, null, or empty
+        if (!playerId || playerId === 'undefined' || playerId === 'null' || playerId.trim() === '') {
+          console.log('Skipping invalid player ID:', playerId);
+          return;
+        }
+        
+        // Add all other valid players (removed the timestamp filtering that was too aggressive)
+        if (playerData && typeof playerData === 'object') {
+          console.log('Adding other player:', playerId, playerData.name);
+          serverPlayers[playerId] = playerData;
+        }
+      });
       
-      // Update other players state (completely separate from current user)
+      console.log('Final other players after filtering:', Object.keys(serverPlayers));
+      
+      // Update other players state
       setOtherPlayers(serverPlayers);
       
-      // Update current user properties EXCEPT location
+      // Update current user properties (except location) if server has data for them
+      const serverCurrentUserData = sessionData.players[currentUser.id];
       if (serverCurrentUserData) {
         const { location, ...otherPlayerData } = serverCurrentUserData;
         setCurrentUser(prev => ({
           ...prev,
           ...otherPlayerData
+          // Keep prev.location to maintain local location control
         }));
+        console.log('Updated current user properties from server');
       }
     }
     
@@ -114,8 +136,11 @@ export const useGameSession = () => {
 
   // Update player location
   const updatePlayerLocation = (playerId, location) => {
-    // Never update current user's location from server
-    if (playerId === currentUser.id) return;
+    // NEVER update current user's location from server
+    if (playerId === currentUser.id) {
+      console.log('Ignoring server location update for current user');
+      return;
+    }
 
     // Validate location data
     if (location && 
@@ -126,6 +151,7 @@ export const useGameSession = () => {
         location.latitude !== 0 &&
         location.longitude !== 0) {
       
+      console.log('Updating location for player:', playerId);
       // Update location in other players state
       setOtherPlayers(prev => ({
         ...prev,
@@ -134,16 +160,22 @@ export const useGameSession = () => {
           location
         }
       }));
+    } else {
+      console.log('Invalid location data for player:', playerId, location);
     }
   };
 
   // Update player data
   const updatePlayer = (playerId, playerData) => {
-    // Never update current user from this function
-    if (playerId === currentUser.id) return;
+    // NEVER update current user from this function
+    if (playerId === currentUser.id) {
+      console.log('Ignoring server update for current user');
+      return;
+    }
     
     if (!playerData) {
       // Remove player
+      console.log('Removing player:', playerId);
       setOtherPlayers(prev => {
         const newPlayers = { ...prev };
         delete newPlayers[playerId];
@@ -161,6 +193,7 @@ export const useGameSession = () => {
     }
 
     // Update other player
+    console.log('Updating other player:', playerId);
     setOtherPlayers(prev => ({
       ...prev,
       [playerId]: {
@@ -173,11 +206,13 @@ export const useGameSession = () => {
   // Assign team to player
   const assignTeam = (playerId, teamId) => {
     if (playerId === currentUser.id) {
+      console.log('Assigning team to current user:', teamId);
       setCurrentUser(prev => ({
         ...prev,
         teamId
       }));
     } else {
+      console.log('Assigning team to other player:', playerId, teamId);
       setOtherPlayers(prev => ({
         ...prev,
         [playerId]: {
@@ -204,7 +239,6 @@ export const useGameSession = () => {
     messageTimeouts.current = {};
   };
 
-  // Rest of the functions remain the same
   // Add map pin
   const addPin = (pin) => {
     setPins(prev => [...prev, pin]);
@@ -253,6 +287,11 @@ export const useGameSession = () => {
 
   // Receive a message
   const receiveMessage = (data) => {
+    // Don't add messages from current user (we already handle those locally)
+    if (data.senderId === currentUser.id) {
+      return;
+    }
+    
     // Add to message list
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
