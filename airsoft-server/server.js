@@ -1,4 +1,4 @@
-// server.js - Robust WebSocket Server for Airsoft Tactical Map
+// server.js - Fixed WebSocket Server for Airsoft Tactical Map
 const express = require('express');
 const WebSocket = require('ws');
 const http = require('http');
@@ -105,7 +105,7 @@ class ConnectionManager {
       this.sessionConnections.get(updates.sessionId).add(connectionId);
     }
 
-    // Handle player changes - FIXED: now properly handles null -> playerId assignment
+    // Handle player changes
     if (updates.playerId !== undefined && updates.playerId !== connection.playerId) {
       // Remove old player mapping if it exists
       if (connection.playerId) {
@@ -135,25 +135,16 @@ class ConnectionManager {
   }
 
   getSessionConnections(sessionId) {
-    console.log(`🔍 Session ${sessionId} has ${this.connections.size} registered connections`);
-    
     const sessionConnections = [];
     for (const [connectionId, connection] of this.connections) {
-      console.log(`🔍 Connection ${connectionId} (player: ${connection.playerId}): readyState=${connection.ws.readyState}, isOpen=${this.isConnectionOpen(connection)}, isConnecting=${this.isConnectionConnecting(connection)}`);
-      
-      // Check if connection belongs to this session and is usable
       if (connection.sessionId === sessionId && this.isConnectionUsable(connection)) {
         sessionConnections.push({
           id: connectionId,
           playerId: connection.playerId,
           ws: connection.ws
         });
-      } else if (connection.sessionId === sessionId) {
-        console.log(`⚠️ Filtering out connection ${connectionId} - WebSocket not open or connecting (state: ${connection.ws.readyState})`);
       }
     }
-    
-    console.log(`✅ Returning ${sessionConnections.length} valid connections for session ${sessionId}`);
     return sessionConnections;
   }
 
@@ -645,13 +636,14 @@ wss.on('connection', (ws, req) => {
       // Remove player from session
       const session = sessionManager.getSession(connection.sessionId);
       if (session) {
+        const player = session.players.get(connection.playerId);
         session.removePlayer(connection.playerId);
         
         // Notify other players
         connectionManager.broadcastToSession(connection.sessionId, {
           type: 'playerLeft',
           playerId: connection.playerId,
-          playerName: session.players.get(connection.playerId)?.name || 'Unknown',
+          playerName: player?.name || 'Unknown',
           timestamp: new Date().toISOString()
         }, connectionId);
         
@@ -756,6 +748,7 @@ function handleCreateSession(connectionId, data) {
   // Send success response with full session data
   connectionManager.sendToConnection(connectionId, {
     type: 'sessionCreated',
+    sessionCode: session.code,
     session: session.getFullSyncData(),
     playerId: playerId
   });
@@ -797,6 +790,7 @@ function handleJoinSession(connectionId, data) {
       name: playerName,
       teamId: null,
       location: null,
+      isHost: false,
       joinedAt: new Date().toISOString()
     };
     session.addPlayer(player);
@@ -818,15 +812,34 @@ function handleJoinSession(connectionId, data) {
     isReconnection: isReconnection
   });
 
-  // Notify other players about the join/reconnection
-  const joinMessage = {
+  // CRITICAL FIX: Notify all existing players about the new/reconnected player
+  const playerJoinedMessage = {
     type: isReconnection ? 'playerReconnected' : 'playerJoined',
-    player: player,
+    player: {
+      id: player.id,
+      name: player.name,
+      teamId: player.teamId,
+      isHost: player.isHost,
+      location: player.location // Include location if available
+    },
     timestamp: new Date().toISOString()
   };
   
-  const broadcastCount = connectionManager.broadcastToSession(session.id, joinMessage, connectionId);
+  // Broadcast to all OTHER players in session
+  const broadcastCount = connectionManager.broadcastToSession(session.id, playerJoinedMessage, connectionId);
   console.log(`📢 ${isReconnection ? 'Reconnection' : 'Join'} notification sent to ${broadcastCount} other players`);
+  
+  // ADDITIONAL FIX: If the new player has a location, send a location update immediately
+  if (player.location) {
+    const locationMessage = {
+      type: 'locationUpdate',
+      playerId: player.id,
+      playerName: player.name,
+      location: player.location,
+      teamId: player.teamId
+    };
+    connectionManager.broadcastToSession(session.id, locationMessage, connectionId);
+  }
   
   console.log(`🎯 Player ${playerName} ${isReconnection ? 'reconnected to' : 'joined'} session ${sessionCode}`);
 }
@@ -1060,6 +1073,15 @@ setInterval(() => {
 }, 5000);
 
 // REST API Endpoints
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    activeSessions: sessionManager.sessions.size,
+    activeConnections: connectionManager.connections.size,
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
