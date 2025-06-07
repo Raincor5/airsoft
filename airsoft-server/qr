@@ -1,0 +1,3 @@
+#!/bin/bash
+# Quick QR code generator - just run './qr' when ngrok is running
+./generate-qr.sh 
