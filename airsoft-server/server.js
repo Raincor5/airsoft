@@ -248,18 +248,9 @@ class ConnectionManager {
   }
 
   cleanup() {
-    const now = Date.now();
-    const staleTimeout = 1800000; // 30 minutes (much more forgiving)
-    
-    for (const [connectionId, connection] of this.connections) {
-      // Only clean up if connection is truly stale and not just in background
-      if (connection.state !== 'background' && 
-          !connection.isAlive && 
-          (now - connection.lastSeen) > staleTimeout) {
-        console.log(`🧹 Cleaning up stale connection: ${connectionId} (last seen ${Math.round((now - connection.lastSeen) / 1000)}s ago)`);
-        this.removeConnection(connectionId);
-      }
-    }
+    // Automatic connection cleanup disabled - only manual leaving allowed
+    // Connections will only be removed when explicitly closed or left
+    return;
   }
 }
 
@@ -522,21 +513,376 @@ class SessionManager {
   }
   
   cleanup() {
-    const now = Date.now();
-    const staleTimeout = 7200000; // 2 hours (more forgiving)
-    
+    // Automatic session cleanup disabled - only remove empty sessions
+    // Sessions persist until manually ended or all players leave
     for (const [sessionId, session] of this.sessions) {
-      if ((now - session.lastActivity) > staleTimeout || session.players.size === 0) {
-        console.log(`🧹 Cleaning up inactive session: ${session.code}`);
+      if (session.players.size === 0) {
+        console.log(`🧹 Removing empty session: ${session.code}`);
         this.removeSession(sessionId);
       }
     }
   }
 }
 
+// Authoritative Game Server - Tick System
+class AuthoritativeGameServer {
+  constructor() {
+    this.tickRate = 30; // 30 Hz
+    this.tickInterval = 1000 / this.tickRate; // 33.33ms
+    this.snapshotInterval = 5000; // 5000ms = 5 seconds
+    this.locationBroadcastInterval = 200; // 200ms = 5Hz for location updates
+    this.lastSnapshotTime = 0;
+    this.lastLocationBroadcast = 0;
+    this.tickNumber = 0;
+    this.isRunning = false;
+    
+    // Input buffer for batch processing
+    this.inputBuffer = new Map(); // sessionId -> Array of inputs
+    
+    // State tracking for deltas
+    this.lastSnapshots = new Map(); // sessionId -> last snapshot
+    this.stateDirtyFlags = new Map(); // sessionId -> dirty flags
+  }
+  
+  start() {
+    if (this.isRunning) return;
+    
+    this.isRunning = true;
+    this.gameLoop();
+    console.log(`🎮 Authoritative Game Server started at ${this.tickRate}Hz`);
+  }
+  
+  stop() {
+    this.isRunning = false;
+    if (this.gameLoopTimeout) {
+      clearTimeout(this.gameLoopTimeout);
+    }
+    console.log(`🛑 Authoritative Game Server stopped`);
+  }
+  
+  gameLoop() {
+    if (!this.isRunning) return;
+    
+    const startTime = Date.now();
+    this.tickNumber++;
+    
+    // Process all pending inputs for all sessions
+    this.processInputs();
+    
+    // Update game state for all sessions
+    this.updateGameState();
+    
+    // Send snapshots/deltas to clients
+    this.sendStateUpdates();
+    
+    // Calculate next tick timing
+    const processingTime = Date.now() - startTime;
+    const nextTickDelay = Math.max(0, this.tickInterval - processingTime);
+    
+    this.gameLoopTimeout = setTimeout(() => this.gameLoop(), nextTickDelay);
+    
+    // Debug logging every second
+    if (this.tickNumber % this.tickRate === 0) {
+      console.log(`🔄 Server Tick ${this.tickNumber}, Processing: ${processingTime}ms`);
+    }
+  }
+  
+  addInput(sessionId, input) {
+    if (!this.inputBuffer.has(sessionId)) {
+      this.inputBuffer.set(sessionId, []);
+    }
+    this.inputBuffer.get(sessionId).push(input);
+    
+    // Mark session as dirty for state updates
+    this.markDirty(sessionId, input.type);
+  }
+  
+  processInputs() {
+    for (const [sessionId, inputs] of this.inputBuffer) {
+      const session = sessionManager.getSession(sessionId);
+      if (!session) continue;
+      
+      // Process inputs in order
+      inputs.forEach(input => {
+        this.processInput(session, input);
+      });
+      
+      // Clear processed inputs
+      inputs.length = 0;
+    }
+  }
+  
+  processInput(session, input) {
+    const { type, playerId, data, sequence } = input;
+    
+    switch (type) {
+      case 'playerJoined':
+        // Mark session as dirty for state update
+        this.markDirty(session.id, 'playerStates');
+        this.sendAck(session.id, playerId, sequence, 'playerJoined');
+        break;
+        
+      case 'locationUpdate':
+        const { location } = data;
+        if (session.updatePlayerLocation(playerId, location)) {
+          this.markDirty(session.id, 'playerPositions');
+          this.sendAck(session.id, playerId, sequence, 'locationUpdate');
+        }
+        break;
+        
+      case 'addPin':
+        const pin = {
+          id: data.id || require('uuid').v4(),
+          type: data.type,
+          name: data.name || data.type,
+          coordinate: data.position,
+          playerId: playerId,
+          teamId: session.players.get(playerId)?.teamId,
+          timestamp: new Date().toISOString()
+        };
+        session.addPin(pin);
+        this.markDirty(session.id, 'pins');
+        console.log(`🎯 Server processed pin: ${pin.type} at ${pin.coordinate?.latitude}, ${pin.coordinate?.longitude}`);
+        // Send acknowledgment and broadcast
+        this.sendAck(session.id, playerId, sequence, 'addPin');
+        this.broadcastPinAdded(session.id, pin);
+        break;
+        
+      case 'removePin':
+        if (session.removePin(data.pinId)) {
+          this.markDirty(session.id, 'pins');
+          this.sendAck(session.id, playerId, sequence, 'removePin');
+          this.broadcastPinRemoved(session.id, data.pinId);
+        }
+        break;
+        
+      case 'sendMessage':
+        const message = {
+          id: require('uuid').v4(),
+          text: data.text,
+          playerId: playerId,
+          playerName: session.players.get(playerId)?.name,
+          teamId: session.players.get(playerId)?.teamId,
+          timestamp: new Date().toISOString()
+        };
+        session.addMessage(message);
+        this.markDirty(session.id, 'messages');
+        this.sendAck(session.id, playerId, sequence, 'sendMessage');
+        this.broadcastMessage(session.id, message);
+        break;
+        
+      case 'assignTeam':
+        // Only allow host to assign teams
+        if (session.hostPlayerId === playerId) {
+          const { targetPlayerId, teamId } = data;
+          if (session.assignPlayerToTeam(targetPlayerId, teamId)) {
+            const player = session.players.get(targetPlayerId);
+            this.markDirty(session.id, 'playerStates');
+            this.markDirty(session.id, 'teams');
+            this.sendAck(session.id, playerId, sequence, 'assignTeam');
+            this.broadcastTeamAssignment(session.id, targetPlayerId, teamId, player?.name);
+            console.log(`🔵 Team assignment processed: ${player?.name} assigned to ${teamId}`);
+          }
+        }
+        break;
+    }
+  }
+  
+  updateGameState() {
+    // Update any time-based game logic here
+    // Player activity tracking disabled - players remain active until manually leaving
+    // No automatic state changes based on inactivity
+  }
+  
+  sendStateUpdates() {
+    const now = Date.now();
+    const shouldSendSnapshot = (now - this.lastSnapshotTime) >= this.snapshotInterval;
+    
+    for (const session of sessionManager.sessions.values()) {
+      const hasDirtyData = this.stateDirtyFlags.has(session.id) && 
+                          this.stateDirtyFlags.get(session.id).size > 0;
+      
+      if (shouldSendSnapshot || !this.lastSnapshots.has(session.id)) {
+        this.sendSnapshot(session);
+      } else if (hasDirtyData) {
+        this.sendDelta(session);
+      }
+      // Don't send anything if no changes
+    }
+    
+    if (shouldSendSnapshot) {
+      this.lastSnapshotTime = now;
+    }
+  }
+  
+  sendSnapshot(session) {
+    const snapshot = {
+      type: 'gameSnapshot',
+      tick: this.tickNumber,
+      timestamp: Date.now(),
+      isFullSnapshot: true,
+      session: {
+        code: session.code,
+        name: session.name,
+        hostPlayerId: session.hostPlayerId,
+        players: Array.from(session.players.values()),
+        pins: Array.from(session.pins.values()),
+        messages: session.messages,
+        teams: Array.from(session.teams.values()),
+        gamePhase: session.gamePhase,
+        scores: session.scores
+      }
+    };
+    
+    // Store for future delta generation
+    this.lastSnapshots.set(session.id, snapshot);
+    
+    // Send to all clients in session
+    connectionManager.broadcastToSession(session.id, snapshot);
+    
+    // Clear dirty flags after snapshot
+    this.stateDirtyFlags.delete(session.id);
+    
+    console.log(`📸 Sent full snapshot for session ${session.code} (${session.players.size} players)`);
+  }
+  
+  sendDelta(session) {
+    const dirtyFlags = this.stateDirtyFlags.get(session.id);
+    if (!dirtyFlags || dirtyFlags.size === 0) return;
+    
+    const delta = {
+      type: 'gameDelta',
+      tick: this.tickNumber,
+      timestamp: Date.now(),
+      changes: {}
+    };
+    
+    // Build delta based on dirty flags
+    if (dirtyFlags.has('playerStates')) {
+      delta.changes.playerStates = Object.fromEntries(
+        Array.from(session.players.entries()).map(([id, player]) => [
+          id,
+          {
+            id: player.id,
+            name: player.name,
+            isHost: player.isHost,
+            teamId: player.teamId,
+            location: player.location
+          }
+        ])
+      );
+    }
+    
+    if (dirtyFlags.has('playerPositions')) {
+      delta.changes.playerPositions = Object.fromEntries(
+        Array.from(session.players.entries()).map(([id, player]) => [
+          id,
+          player.location
+        ])
+      );
+    }
+    
+    if (dirtyFlags.has('pins')) {
+      delta.changes.pins = Array.from(session.pins.values());
+    }
+    
+    if (dirtyFlags.has('messages')) {
+      delta.changes.messages = session.messages.slice(-10); // Last 10 messages
+    }
+    
+    if (dirtyFlags.has('teams')) {
+      delta.changes.teams = Array.from(session.teams.values());
+    }
+    
+    // Send to all clients in session
+    connectionManager.broadcastToSession(session.id, delta);
+    
+    // Clear processed dirty flags
+    dirtyFlags.clear();
+    
+    console.log(`🔄 Sent delta for session ${session.code} with changes: ${Array.from(dirtyFlags).join(', ')}`);
+  }
+  
+  markDirty(sessionId, component) {
+    if (!this.stateDirtyFlags.has(sessionId)) {
+      this.stateDirtyFlags.set(sessionId, new Set());
+    }
+    this.stateDirtyFlags.get(sessionId).add(component);
+  }
+  
+  sendAck(sessionId, playerId, sequence, actionType) {
+    const ack = {
+      type: 'inputAck',
+      sequence: sequence,
+      actionType: actionType,
+      tick: this.tickNumber,
+      timestamp: Date.now()
+    };
+    
+    connectionManager.sendToPlayer(playerId, ack);
+  }
+  
+  broadcastPinAdded(sessionId, pin) {
+    const message = {
+      type: 'pinAdded',
+      pin: pin,
+      tick: this.tickNumber
+    };
+    connectionManager.broadcastToSession(sessionId, message);
+  }
+  
+  broadcastPinRemoved(sessionId, pinId) {
+    const message = {
+      type: 'pinRemoved',
+      pinId: pinId,
+      tick: this.tickNumber
+    };
+    connectionManager.broadcastToSession(sessionId, message);
+  }
+  
+  broadcastMessage(sessionId, message) {
+    const broadcastMsg = {
+      type: 'messageReceived',
+      message: message,
+      tick: this.tickNumber
+    };
+    connectionManager.broadcastToSession(sessionId, broadcastMsg);
+  }
+  
+  broadcastTeamAssignment(sessionId, targetPlayerId, teamId, playerName) {
+    const message = {
+      type: 'teamAssigned',
+      playerId: targetPlayerId,
+      playerName: playerName || 'Unknown',
+      teamId: teamId,
+      tick: this.tickNumber,
+      timestamp: new Date().toISOString()
+    };
+    connectionManager.broadcastToSession(sessionId, message);
+  }
+  
+  broadcastLocationUpdate(sessionId, playerId, locationData) {
+    const session = sessionManager.getSession(sessionId);
+    if (!session) return;
+    
+    const player = session.players.get(playerId);
+    const locationMessage = {
+      type: 'locationUpdate',
+      playerId: playerId,
+      playerName: player?.name || 'Unknown',
+      location: locationData,
+      teamId: player?.teamId || null,
+      tick: this.tickNumber
+    };
+    
+    connectionManager.broadcastToSession(sessionId, locationMessage);
+  }
+}
+
 // Initialize managers
 const connectionManager = new ConnectionManager();
 const sessionManager = new SessionManager();
+const gameServer = new AuthoritativeGameServer();
 
 // WebSocket Server with enhanced configuration
 const wss = new WebSocket.Server({ 
@@ -556,40 +902,8 @@ wss.on('connection', (ws, req) => {
   
   console.log(`🔌 New WebSocket connection: ${connectionId}`);
 
-  // Enhanced heartbeat system - much more forgiving for mobile
-  const heartbeatInterval = setInterval(() => {
-    const connection = connectionManager.getConnection(connectionId);
-    if (!connection) {
-      clearInterval(heartbeatInterval);
-      return;
-    }
-    
-    // Be very forgiving with background apps - iOS can suspend connections
-    const maxMissedHeartbeats = connection.state === 'background' ? 10 : 8;
-    
-    if (!connection.isAlive && connection.missedHeartbeats >= maxMissedHeartbeats) {
-      console.log(`💔 Connection timeout after ${connection.missedHeartbeats} missed heartbeats: ${connectionId}`);
-      ws.terminate();
-      return;
-    }
-    
-    if (!connection.isAlive) {
-      connection.missedHeartbeats = (connection.missedHeartbeats || 0) + 1;
-      console.log(`⚠️ Missed heartbeat ${connection.missedHeartbeats}/${maxMissedHeartbeats} for connection: ${connectionId}`);
-    } else {
-      connection.missedHeartbeats = 0;
-    }
-    
-    connection.isAlive = false;
-    connection.lastHeartbeat = Date.now();
-    
-    // Send heartbeat with current timestamp
-    try {
-      ws.ping(JSON.stringify({ timestamp: Date.now(), connectionId }));
-    } catch (error) {
-      console.error(`Error sending ping to ${connectionId}:`, error);
-    }
-  }, 45000); // Increased to 45 seconds for mobile compatibility
+  // Heartbeat disabled - connections only close manually
+  // const heartbeatInterval = null; // No automatic timeouts
   
   ws.on('pong', (data) => {
     const connection = connectionManager.getConnection(connectionId);
@@ -629,7 +943,7 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', (code, reason) => {
     console.log(`🔌 Connection closed: ${connectionId} (${code})`);
-    clearInterval(heartbeatInterval);
+    // No heartbeat interval to clear
     
     const connection = connectionManager.getConnection(connectionId);
     if (connection && connection.playerId && connection.sessionId) {
@@ -639,13 +953,8 @@ wss.on('connection', (ws, req) => {
         const player = session.players.get(connection.playerId);
         session.removePlayer(connection.playerId);
         
-        // Notify other players
-        connectionManager.broadcastToSession(connection.sessionId, {
-          type: 'playerLeft',
-          playerId: connection.playerId,
-          playerName: player?.name || 'Unknown',
-          timestamp: new Date().toISOString()
-        }, connectionId);
+        // Player disconnect will be handled via authoritative server snapshots
+        // No direct broadcasts needed
         
         // Clean up empty session
         if (session.players.size === 0) {
@@ -717,7 +1026,10 @@ function handleMessage(connectionId, data) {
 function handleCreateSession(connectionId, data) {
   const { playerId, playerName } = data;
   
+  console.log(`🎮 Creating session for player ${playerName} (${playerId})`);
+  
   if (!playerId || !playerName) {
+    console.log(`❌ Invalid create session request - missing player info`);
     connectionManager.sendToConnection(connectionId, {
       type: 'error',
       message: 'Player ID and name are required'
@@ -745,6 +1057,8 @@ function handleCreateSession(connectionId, data) {
     sessionId: session.id
   });
 
+  console.log(`✅ Session ${session.code} created with host ${playerName}`);
+
   // Send success response with full session data
   connectionManager.sendToConnection(connectionId, {
     type: 'sessionCreated',
@@ -753,13 +1067,16 @@ function handleCreateSession(connectionId, data) {
     playerId: playerId
   });
   
-  console.log(`🎯 Session ${session.code} created by ${playerName}`);
+  console.log(`📤 Sent session created response to host ${playerName}`);
 }
 
 function handleJoinSession(connectionId, data) {
   const { sessionCode, playerId, playerName } = data;
   
+  console.log(`🎮 Join session request: ${sessionCode} by ${playerName} (${playerId})`);
+  
   if (!sessionCode || !playerId || !playerName) {
+    console.log(`❌ Invalid join session request - missing required fields`);
     connectionManager.sendToConnection(connectionId, {
       type: 'error',
       message: 'Session code, player ID, and name are required'
@@ -769,6 +1086,7 @@ function handleJoinSession(connectionId, data) {
 
   const session = sessionManager.getSessionByCode(sessionCode);
   if (!session) {
+    console.log(`❌ Session ${sessionCode} not found`);
     connectionManager.sendToConnection(connectionId, {
       type: 'error',
       message: 'Session not found'
@@ -797,11 +1115,13 @@ function handleJoinSession(connectionId, data) {
     console.log(`➕ New player ${playerName} joining session ${sessionCode}`);
   }
 
-  // Update connection mapping BEFORE broadcasting (critical for proper recipient lookup)
+  // Update connection mapping BEFORE broadcasting
   connectionManager.updateConnection(connectionId, {
     playerId: playerId,
     sessionId: session.id
   });
+
+  console.log(`✅ Player ${playerName} connected to session ${sessionCode}`);
 
   // Send confirmation with session state
   connectionManager.sendToConnection(connectionId, {
@@ -812,36 +1132,24 @@ function handleJoinSession(connectionId, data) {
     isReconnection: isReconnection
   });
 
-  // CRITICAL FIX: Notify all existing players about the new/reconnected player
-  const playerJoinedMessage = {
-    type: isReconnection ? 'playerReconnected' : 'playerJoined',
-    player: {
-      id: player.id,
-      name: player.name,
-      teamId: player.teamId,
-      isHost: player.isHost,
-      location: player.location // Include location if available
+  console.log(`📤 Sent session joined response to ${playerName}`);
+  
+  // Instead of direct notification, add a join input to the game server
+  gameServer.addInput(session.id, {
+    type: 'playerJoined',
+    playerId: playerId,
+    data: {
+      player: {
+        id: player.id,
+        name: player.name,
+        isHost: player.isHost,
+        teamId: player.teamId,
+        location: player.location
+      }
     },
-    timestamp: new Date().toISOString()
-  };
-  
-  // Broadcast to all OTHER players in session
-  const broadcastCount = connectionManager.broadcastToSession(session.id, playerJoinedMessage, connectionId);
-  console.log(`📢 ${isReconnection ? 'Reconnection' : 'Join'} notification sent to ${broadcastCount} other players`);
-  
-  // ADDITIONAL FIX: If the new player has a location, send a location update immediately
-  if (player.location) {
-    const locationMessage = {
-      type: 'locationUpdate',
-      playerId: player.id,
-      playerName: player.name,
-      location: player.location,
-      teamId: player.teamId
-    };
-    connectionManager.broadcastToSession(session.id, locationMessage, connectionId);
-  }
-  
-  console.log(`🎯 Player ${playerName} ${isReconnection ? 'reconnected to' : 'joined'} session ${sessionCode}`);
+    sequence: Date.now(),
+    timestamp: Date.now()
+  });
 }
 
 function handleLeaveSession(connectionId, data) {
@@ -854,13 +1162,8 @@ function handleLeaveSession(connectionId, data) {
   // Remove player
   const player = session.removePlayer(connection.playerId);
   
-  // Notify others
-  connectionManager.broadcastToSession(connection.sessionId, {
-    type: 'playerLeft',
-    playerId: connection.playerId,
-    playerName: player?.name || 'Unknown',
-    timestamp: new Date().toISOString()
-  }, connectionId);
+  // Player leave will be notified via authoritative server snapshots
+  // No direct broadcasts needed
       
   // Clean up empty session
   if (session.players.size === 0) {
@@ -884,120 +1187,103 @@ function handleLocationUpdate(connectionId, data) {
   const connection = connectionManager.getConnection(connectionId);
   if (!connection || !connection.sessionId || !connection.playerId) return;
   
-  const session = sessionManager.getSession(connection.sessionId);
-  if (!session) return;
+  const { location, sequence } = data;
+  const messageSequence = sequence || 0;
   
-  const { location } = data;
-  if (session.updatePlayerLocation(connection.playerId, location)) {
-    // Get player's team for team-specific broadcasting
-    const player = session.players.get(connection.playerId);
-    
-    // Broadcast comprehensive location data to other players in session
-    const locationMessage = {
+  console.log(`📍 Location input from ${connection.playerId}: ${location.latitude}, ${location.longitude}`);
+
+  // Route through authoritative game server
+  gameServer.addInput(connection.sessionId, {
+    type: 'locationUpdate',
+    playerId: connection.playerId,
+    data: {
+      location: location
+    },
+    sequence: messageSequence,
+    timestamp: Date.now()
+  });
+
+  // Broadcast to all players in session
+  const session = sessionManager.getSession(connection.sessionId);
+  if (session) {
+    const message = {
       type: 'locationUpdate',
       playerId: connection.playerId,
-      playerName: player?.name || 'Unknown',
-      location: {
-        latitude: location.latitude,
-        longitude: location.longitude,
-        heading: location.heading || null,
-        altitude: location.altitude || null,
-        accuracy: location.accuracy || null,
-        speed: location.speed || null,
-        timestamp: location.timestamp || new Date().toISOString()
-      },
-      teamId: player?.teamId || null
+      location: location
     };
-    
-    connectionManager.broadcastToSession(connection.sessionId, locationMessage, connectionId);
-    
-    console.log(`📍 Location update: ${connection.playerId} -> (${location.latitude}, ${location.longitude}) heading: ${location.heading}`);
+    connectionManager.broadcastToSession(connection.sessionId, message);
   }
 }
 
 function handleAddPin(connectionId, data) {
   const connection = connectionManager.getConnection(connectionId);
-  if (!connection || !connection.sessionId) return;
-    
-  const session = sessionManager.getSession(connection.sessionId);
-  if (!session) return;
+  if (!connection || !connection.sessionId || !connection.playerId) return;
   
-  const { pin } = data;
-  const newPin = {
-    id: pin.id || uuidv4(),
-    type: pin.type,
-    name: pin.name,
-    coordinate: pin.coordinate,
+  // Extract pin data - could be nested in 'pin' object
+  let pinData = data.pin || data;
+  const { type, coordinate, name, id, sequence } = pinData;
+  const messageSequence = data.sequence || 0;
+  
+  console.log(`📍 Pin input from ${connection.playerId}: ${type} at ${coordinate?.latitude}, ${coordinate?.longitude}`);
+
+  // Route through authoritative game server
+  gameServer.addInput(connection.sessionId, {
+    type: 'addPin',
     playerId: connection.playerId,
-    teamId: pin.teamId || null,
-    timestamp: new Date().toISOString()
-  };
-  
-  session.addPin(newPin);
-  
-  // Broadcast to appropriate audience
-  const message = {
-    type: 'pinAdded',
-    pin: newPin
-  };
-  
-  if (newPin.teamId) {
-    connectionManager.broadcastToTeam(connection.sessionId, newPin.teamId, message);
-  } else {
-    connectionManager.broadcastToSession(connection.sessionId, message);
-  }
+    data: {
+      id: id || require('uuid').v4(),
+      type,
+      position: coordinate,
+      name: name || type
+    },
+    sequence: messageSequence,
+    timestamp: Date.now()
+  });
 }
 
 function handleRemovePin(connectionId, data) {
   const connection = connectionManager.getConnection(connectionId);
-  if (!connection || !connection.sessionId) return;
-    
-  const session = sessionManager.getSession(connection.sessionId);
-  if (!session) return;
+  if (!connection || !connection.sessionId || !connection.playerId) return;
   
-  const { pinId } = data;
-  if (session.removePin(pinId)) {
-    connectionManager.broadcastToSession(connection.sessionId, {
-      type: 'pinRemoved',
-      pinId: pinId,
-      timestamp: new Date().toISOString()
-    });
-  }
+  const { pinId, sequence } = data;
+  const messageSequence = sequence || 0;
+  
+  console.log(`🗑️ Pin removal from ${connection.playerId}: ${pinId}`);
+
+  // Route through authoritative game server
+  gameServer.addInput(connection.sessionId, {
+    type: 'removePin',
+    playerId: connection.playerId,
+    data: {
+      pinId: pinId
+    },
+    sequence: messageSequence,
+    timestamp: Date.now()
+  });
 }
 
 function handleSendMessage(connectionId, data) {
   const connection = connectionManager.getConnection(connectionId);
-  if (!connection || !connection.sessionId) return;
-    
-  const session = sessionManager.getSession(connection.sessionId);
-  if (!session) return;
+  if (!connection || !connection.sessionId || !connection.playerId) return;
   
-  const player = session.players.get(connection.playerId);
-  if (!player) return;
+  // Extract message data - could be nested in 'message' object
+  let messageData = data.message || data;
+  const { text, teamId } = messageData;
+  const sequence = data.sequence || 0;
   
-  const { message } = data;
-  const newMessage = {
-    id: uuidv4(),
-    text: message.text,
+  console.log(`�� Message input from ${connection.playerId}: ${text}`);
+
+  // Route through authoritative game server
+  gameServer.addInput(connection.sessionId, {
+    type: 'sendMessage',
     playerId: connection.playerId,
-    playerName: player.name,
-    teamId: message.teamId || null,
-    timestamp: new Date().toISOString()
-  };
-  
-  session.addMessage(newMessage);
-  
-  // Broadcast to appropriate audience
-  const broadcastMessage = {
-    type: 'messageReceived',
-    message: newMessage
-  };
-  
-  if (newMessage.teamId) {
-    connectionManager.broadcastToTeam(connection.sessionId, newMessage.teamId, broadcastMessage);
-  } else {
-    connectionManager.broadcastToSession(connection.sessionId, broadcastMessage);
-  }
+    data: {
+      text,
+      teamId
+    },
+    sequence: sequence,
+    timestamp: Date.now()
+  });
 }
 
 function handleAssignTeam(connectionId, data) {
@@ -1007,18 +1293,22 @@ function handleAssignTeam(connectionId, data) {
   const session = sessionManager.getSession(connection.sessionId);
   if (!session || session.hostPlayerId !== connection.playerId) return;
   
-  const { playerId, teamId } = data;
-  if (session.assignPlayerToTeam(playerId, teamId)) {
-    const player = session.players.get(playerId);
-    
-    connectionManager.broadcastToSession(connection.sessionId, {
-      type: 'teamAssigned',
-      playerId: playerId,
-      playerName: player?.name || 'Unknown',
-      teamId: teamId,
-      timestamp: new Date().toISOString()
-    });
-  }
+  const { playerId, teamId, sequence } = data;
+  const messageSequence = sequence || 0;
+  
+  console.log(`🔵 Team assignment from ${connection.playerId}: assign ${playerId} to ${teamId}`);
+
+  // Route through authoritative game server
+  gameServer.addInput(connection.sessionId, {
+    type: 'assignTeam',
+    playerId: connection.playerId,
+    data: {
+      targetPlayerId: playerId,
+      teamId: teamId
+    },
+    sequence: messageSequence,
+    timestamp: Date.now()
+  });
 }
 
 function handleSyncRequest(connectionId, data) {
@@ -1054,23 +1344,8 @@ function handleAppStateChange(connectionId, data) {
   }
 }
 
-// Real-time sync broadcast (every 5 seconds)
-setInterval(() => {
-  for (const [sessionId, session] of sessionManager.sessions) {
-    const connections = connectionManager.getSessionConnections(sessionId);
-    if (connections.length > 1) {
-      // Broadcast lightweight sync data
-      const syncData = {
-        type: 'realtimeSync',
-        playerPositions: Object.fromEntries(session.syncData.playerPositions),
-        playerStates: Object.fromEntries(session.syncData.playerStates),
-        timestamp: new Date().toISOString()
-      };
-      
-      connectionManager.broadcastToSession(sessionId, syncData);
-    }
-  }
-}, 5000);
+// Legacy real-time sync removed - now handled by AuthoritativeGameServer
+// The game server provides proper snapshots (every 5s) and deltas (as needed)
 
 // REST API Endpoints
 app.get('/health', (req, res) => {
@@ -1121,6 +1396,9 @@ server.listen(PORT, () => {
   console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}`);
   console.log(`🌐 REST API: http://localhost:${PORT}/api`);
   console.log(`💡 Ready for real-time tactical synchronization!`);
+  
+  // Start authoritative game server
+  gameServer.start();
 });
 
 // Graceful shutdown
